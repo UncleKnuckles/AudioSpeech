@@ -76,6 +76,7 @@ namespace AudioSpeech
         public string Accent = "#FF8AC4";
         public string Language = System.Globalization.CultureInfo.CurrentUICulture.TwoLetterISOLanguageName == "ru" ? "ru" : "en";
         public int KeepRecordings = 10;
+        public string Microphone = ""; // device name; empty = automatic
         public string Hint = ""; // extra words for the transcription prompt: usual languages, names, terms // older recordings are deleted, like Handy's history limit
 
         public Color AccentColor
@@ -88,7 +89,12 @@ namespace AudioSpeech
 
         public static Settings Load()
         {
-            try { if (File.Exists(FilePath)) return new JavaScriptSerializer().Deserialize<Settings>(File.ReadAllText(FilePath, Encoding.UTF8)) ?? new Settings(); }
+            try
+            {
+                string seed = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "settings.json");
+                if (!File.Exists(FilePath) && File.Exists(seed)) { Directory.CreateDirectory(Dir); File.Copy(seed, FilePath); }
+                if (File.Exists(FilePath)) return new JavaScriptSerializer().Deserialize<Settings>(File.ReadAllText(FilePath, Encoding.UTF8)) ?? new Settings();
+            }
             catch (Exception e) { Log.Write("settings: " + e.Message); }
             return new Settings();
         }
@@ -347,7 +353,7 @@ namespace AudioSpeech
 
         void StartRecording()
         {
-            try { recorder = new Recorder(); recorder.Start(); }
+            try { recorder = new Recorder(); recorder.Start(Settings.Microphone); }
             catch (Exception e) { recorder = null; Log.Write("mic: " + e); Notify(L.T("Микрофон: ", "Microphone: ") + e.Message, ToolTipIcon.Error); return; }
             state = State.Recording;
             generation++;
@@ -542,10 +548,62 @@ namespace AudioSpeech
         volatile bool running;
         public volatile float Level;
 
-        public void Start()
+        [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+        struct WaveInCaps { public short wMid, wPid; public int vDriverVersion; [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)] public string szPname; public int dwFormats; public short wChannels, wReserved1; }
+        [DllImport("winmm.dll")] static extern int waveInGetNumDevs();
+        [DllImport("winmm.dll", CharSet = CharSet.Unicode)] static extern int waveInGetDevCaps(IntPtr id, ref WaveInCaps caps, int size);
+
+        /// <summary>Input device names, in waveIn order (Windows cuts them to 31 characters).</summary>
+        public static List<string> Devices()
+        {
+            var list = new List<string>();
+            int n = waveInGetNumDevs();
+            for (int i = 0; i < n; i++)
+            {
+                var caps = new WaveInCaps();
+                list.Add(waveInGetDevCaps((IntPtr)i, ref caps, Marshal.SizeOf(typeof(WaveInCaps))) == 0 ? caps.szPname : "#" + i);
+            }
+            return list;
+        }
+
+        // waveIn cuts names to 31 characters; the full names of active capture endpoints are in the registry.
+        public static string FullName(string shortName)
+        {
+            try
+            {
+                using (Microsoft.Win32.RegistryKey root = Microsoft.Win32.Registry.LocalMachine.OpenSubKey(@"SOFTWARE\Microsoft\Windows\CurrentVersion\MMDevices\Audio\Capture"))
+                {
+                    if (root == null) return shortName;
+                    foreach (string id in root.GetSubKeyNames())
+                        using (Microsoft.Win32.RegistryKey dev = root.OpenSubKey(id))
+                        using (Microsoft.Win32.RegistryKey props = root.OpenSubKey(id + @"\Properties"))
+                        {
+                            object state = dev == null ? null : dev.GetValue("DeviceState");
+                            if (props == null || !(state is int) || (int)state != 1) continue;
+                            string name = props.GetValue("{a45c254e-df1c-4efd-8020-67d146a850e0},2") + " (" + props.GetValue("{b3f8fa53-0004-438e-9003-51a46e139bfc},6") + ")";
+                            if (name.StartsWith(shortName, StringComparison.Ordinal)) return name;
+                        }
+                }
+            }
+            catch (Exception e) { Log.Write("mic names: " + e.Message); }
+            return shortName;
+        }
+
+        int Open(int device, ref WaveFormat fmt)
+        {
+            return waveInOpen(out h, device, ref fmt, ev.SafeWaitHandle.DangerousGetHandle(), IntPtr.Zero, 0x50000 /* CALLBACK_EVENT */);
+        }
+
+        // microphone: a device name from Devices(), or empty for automatic: the Windows default, then any device that opens.
+        public void Start(string microphone)
         {
             var fmt = new WaveFormat { wFormatTag = 1, nChannels = 1, nSamplesPerSec = 16000, nAvgBytesPerSec = 32000, nBlockAlign = 2, wBitsPerSample = 16 };
-            int r = waveInOpen(out h, -1 /* default device */, ref fmt, ev.SafeWaitHandle.DangerousGetHandle(), IntPtr.Zero, 0x50000 /* CALLBACK_EVENT */);
+            List<string> devices = Devices();
+            int chosen = string.IsNullOrEmpty(microphone) ? -1 : devices.IndexOf(microphone);
+            if (!string.IsNullOrEmpty(microphone) && chosen < 0) Log.Write("mic '" + microphone + "' not found, using automatic");
+            int r = Open(chosen, ref fmt);
+            if (r != 0 && chosen >= 0) { Log.Write("mic '" + microphone + "' failed (" + r + "), using automatic"); r = Open(-1, ref fmt); }
+            for (int i = 0; r != 0 && i < devices.Count; i++) r = Open(i, ref fmt);
             if (r != 0) throw new Exception(L.T("не удалось открыть микрофон (код ", "could not open the microphone (code ") + r + ")");
             for (int i = 0; i < Buffers; i++)
             {
@@ -1006,7 +1064,8 @@ namespace AudioSpeech
         public static int Record()
         {
             var rec = new Recorder();
-            rec.Start();
+            rec.Start(Settings.Load().Microphone);
+            Log.Write("devices: " + string.Join(" | ", Recorder.Devices()));
             var ov = new Overlay();
             float max = 0;
             ov.ShowRecording(() => { max = Math.Max(max, rec.Level); return rec.Level; });

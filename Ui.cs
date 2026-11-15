@@ -1,5 +1,6 @@
 // AudioSpeech main window: recordings history with a player, and settings. Everything is custom-drawn
-// to match the floating panel; colours come from the panel theme and accent colour.
+// to match the floating panel; colours come from the theme and accent colour. Hover and press effects are
+// animated: colours fade, selections slide, and a press leaves a fading ripple.
 using System;
 using System.Collections.Generic;
 using System.Drawing;
@@ -24,7 +25,7 @@ namespace AudioSpeech
             var t = new Theme { Dark = s.Theme != "light", Accent = s.AccentColor };
             if (t.Dark)
             {
-                t.Bg = Color.FromArgb(24, 24, 27); t.Surface = Color.FromArgb(35, 35, 40); t.Hover = Color.FromArgb(46, 46, 52);
+                t.Bg = Color.FromArgb(24, 24, 27); t.Surface = Color.FromArgb(35, 35, 40); t.Hover = Color.FromArgb(47, 47, 54);
                 t.Border = Color.FromArgb(58, 58, 65); t.Text = Color.FromArgb(236, 236, 240); t.Dim = Color.FromArgb(148, 148, 158);
             }
             else
@@ -73,13 +74,25 @@ namespace AudioSpeech
         }
 
         public static RectangleF Inset(Rectangle r) { return new RectangleF(r.X + 0.5f, r.Y + 0.5f, r.Width - 1.5f, r.Height - 1.5f); }
+
+        public static Color Mix(Color a, Color b, float t)
+        {
+            t = Math.Max(0, Math.Min(1, t));
+            return Color.FromArgb((int)(a.A + (b.A - a.A) * t), (int)(a.R + (b.R - a.R) * t), (int)(a.G + (b.G - a.G) * t), (int)(a.B + (b.B - a.B) * t));
+        }
     }
 
-    // Base for custom-drawn controls: double-buffered, tracks the mouse for hover effects.
+    // Base for custom-drawn controls: double-buffered, mouse tracking, eased animations and press ripples.
     class Ctl : Control
     {
         protected readonly Theme T;
         protected Point Mouse = new Point(-9999, -9999);
+        readonly Dictionary<int, float> values = new Dictionary<int, float>();
+        readonly Timer frame = new Timer { Interval = 15 };
+        bool moving;
+
+        class Ripple { public PointF At; public RectangleF Area; public float Radius; public DateTime Start; public Color Color; }
+        readonly List<Ripple> ripples = new List<Ripple>();
 
         public Ctl(Theme t)
         {
@@ -87,14 +100,60 @@ namespace AudioSpeech
             SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.UserPaint | ControlStyles.ResizeRedraw, true);
             BackColor = t.Bg;
             Font = t.Body;
+            frame.Tick += delegate { Invalidate(); };
         }
 
-        protected Graphics Begin(PaintEventArgs e)
+        protected override void Dispose(bool disposing) { if (disposing) frame.Dispose(); base.Dispose(disposing); }
+
+        /// <summary>Moves value <paramref name="key"/> a step toward <paramref name="goal"/> (ease-out) and keeps frames coming until it arrives.</summary>
+        protected float Ease(int key, float goal, float speed = 0.22f)
         {
-            e.Graphics.Clear(BackColor);
-            e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
-            return e.Graphics;
+            float v;
+            if (!values.TryGetValue(key, out v)) v = goal;
+            if (Math.Abs(goal - v) < 0.004f) v = goal;
+            else { v += (goal - v) * speed; moving = true; }
+            values[key] = v;
+            return v;
         }
+
+        protected float Ease(int key, bool on) { return Ease(key, on ? 1f : 0f); }
+
+        protected void Press(PointF at, RectangleF area, float radius, Color color)
+        {
+            ripples.Add(new Ripple { At = at, Area = area, Radius = radius, Start = DateTime.UtcNow, Color = color });
+            frame.Start();
+        }
+
+        protected virtual Color RippleColor { get { return T.Dark ? Color.White : Color.Black; } }
+
+        protected sealed override void OnPaint(PaintEventArgs e)
+        {
+            moving = false;
+            Graphics g = e.Graphics;
+            g.Clear(BackColor);
+            g.SmoothingMode = SmoothingMode.AntiAlias;
+            Render(g);
+            for (int i = ripples.Count - 1; i >= 0; i--)
+            {
+                Ripple r = ripples[i];
+                float t = (float)(DateTime.UtcNow - r.Start).TotalMilliseconds / 450f;
+                if (t >= 1) { ripples.RemoveAt(i); continue; }
+                float ease = 1 - (1 - t) * (1 - t);
+                float reach = (float)Math.Sqrt(r.Area.Width * r.Area.Width + r.Area.Height * r.Area.Height);
+                float rad = reach * (0.2f + 0.8f * ease);
+                using (GraphicsPath clip = Draw.Round(r.Area, r.Radius))
+                using (var b = new SolidBrush(Color.FromArgb((int)(55 * (1 - t)), r.Color)))
+                {
+                    g.SetClip(clip);
+                    g.FillEllipse(b, r.At.X - rad, r.At.Y - rad, rad * 2, rad * 2);
+                    g.ResetClip();
+                }
+                moving = true;
+            }
+            if (moving) frame.Start(); else frame.Stop();
+        }
+
+        protected virtual void Render(Graphics g) { }
 
         protected override void OnMouseMove(MouseEventArgs e) { Mouse = e.Location; Invalidate(); base.OnMouseMove(e); }
         protected override void OnMouseLeave(EventArgs e) { Mouse = new Point(-9999, -9999); Invalidate(); base.OnMouseLeave(e); }
@@ -115,36 +174,44 @@ namespace AudioSpeech
             Cursor = Cursors.Hand;
         }
 
-        RectangleF Cell(int i)
+        RectangleF Cell(float i)
         {
             float pad = Dpi.Px(3), w = (Width - 2 * pad) / items.Length;
             return new RectangleF(pad + i * w, pad, w, Height - 2 * pad);
         }
 
-        protected override void OnPaint(PaintEventArgs e)
+        protected override void Render(Graphics g)
         {
-            Graphics g = Begin(e);
             RectangleF all = Draw.Inset(ClientRectangle);
             Draw.Fill(g, T.Surface, all, all.Height / 2);
             Draw.Stroke(g, T.Border, all, all.Height / 2, 1);
             for (int i = 0; i < items.Length; i++)
             {
-                RectangleF r = Cell(i);
-                bool on = i == selected;
-                if (on) Draw.Fill(g, T.Accent, r, r.Height / 2);
-                else if (r.Contains(Mouse)) Draw.Fill(g, T.Hover, r, r.Height / 2);
-                TextRenderer.DrawText(g, items[i], Font, Rectangle.Round(r), on ? T.OnAccent : T.Text, Draw.Center);
+                float h = Ease(i, i != selected && Cell(i).Contains(Mouse));
+                if (h > 0) { RectangleF r = Cell(i); Draw.Fill(g, Color.FromArgb((int)(255 * h), T.Hover), r, r.Height / 2); }
+            }
+            float pos = Ease(-1, selected, 0.25f); // the selection slides between options
+            RectangleF pill = Cell(pos);
+            Draw.Fill(g, T.Accent, pill, pill.Height / 2);
+            for (int i = 0; i < items.Length; i++)
+            {
+                float cover = Math.Max(0, 1 - Math.Abs(pos - i));
+                TextRenderer.DrawText(g, items[i], Font, Rectangle.Round(Cell(i)), Draw.Mix(T.Text, T.OnAccent, cover), Draw.Center);
             }
         }
 
         protected override void OnMouseDown(MouseEventArgs e)
         {
             for (int i = 0; i < items.Length; i++)
-                if (i != selected && Cell(i).Contains(e.Location))
+                if (Cell(i).Contains(e.Location))
                 {
+                    RectangleF r = Cell(i);
+                    Press(e.Location, r, r.Height / 2, RippleColor);
+                    if (i == selected) return;
                     selected = i;
                     Invalidate();
                     if (Changed != null) Changed();
+                    return;
                 }
         }
     }
@@ -163,18 +230,20 @@ namespace AudioSpeech
 
         protected override void OnTextChanged(EventArgs e) { Invalidate(); base.OnTextChanged(e); }
 
-        protected override void OnPaint(PaintEventArgs e)
+        protected override void Render(Graphics g)
         {
-            Graphics g = Begin(e);
             RectangleF r = Draw.Inset(ClientRectangle);
-            Draw.Fill(g, ClientRectangle.Contains(Mouse) ? T.Hover : T.Surface, r, r.Height / 2);
-            Draw.Stroke(g, T.Border, r, r.Height / 2, 1);
+            float h = Ease(0, ClientRectangle.Contains(Mouse));
+            Draw.Fill(g, Draw.Mix(T.Surface, T.Hover, h), r, r.Height / 2);
+            Draw.Stroke(g, Draw.Mix(T.Border, T.Accent, h * 0.6f), r, r.Height / 2, 1);
             if (Glyph == null) { TextRenderer.DrawText(g, Text, Font, ClientRectangle, T.Text, Draw.Center); return; }
             Size ts = TextRenderer.MeasureText(Text, Font, Size.Empty, TextFormatFlags.NoPadding);
-            int gw = Dpi.Px(22), x = (Width - ts.Width - gw) / 2;
+            int gw = Dpi.Px(24), x = (Width - ts.Width - gw) / 2;
             TextRenderer.DrawText(g, Glyph, T.Icons, new Rectangle(x, 0, gw, Height), T.Accent, Draw.Center);
             TextRenderer.DrawText(g, Text, Font, new Rectangle(x + gw, 0, Width - x - gw, Height), T.Text, Draw.Left);
         }
+
+        protected override void OnMouseDown(MouseEventArgs e) { Press(e.Location, Draw.Inset(ClientRectangle), Height / 2f, T.Accent); base.OnMouseDown(e); }
     }
 
     class Toggle : Ctl
@@ -189,14 +258,16 @@ namespace AudioSpeech
             Cursor = Cursors.Hand;
         }
 
-        protected override void OnPaint(PaintEventArgs e)
+        protected override void Render(Graphics g)
         {
-            Graphics g = Begin(e);
             RectangleF r = Draw.Inset(ClientRectangle);
-            Draw.Fill(g, On ? T.Accent : T.Surface, r, r.Height / 2);
-            if (!On) Draw.Stroke(g, T.Border, r, r.Height / 2, 1);
-            float d = r.Height - Dpi.Px(8), x = On ? r.Right - d - Dpi.Px(4) : r.X + Dpi.Px(4);
-            using (var b = new SolidBrush(On ? T.OnAccent : T.Dim)) g.FillEllipse(b, x, r.Y + Dpi.Px(4), d, d);
+            float k = Ease(0, On), h = Ease(1, ClientRectangle.Contains(Mouse));
+            Draw.Fill(g, Draw.Mix(Draw.Mix(T.Surface, T.Hover, h), T.Accent, k), r, r.Height / 2);
+            Draw.Stroke(g, Color.FromArgb((int)(255 * (1 - k)), T.Border), r, r.Height / 2, 1);
+            float baseD = r.Height - Dpi.Px(8), d = baseD + Dpi.Px(2) * h;
+            float off = r.X + Dpi.Px(4), on = r.Right - baseD - Dpi.Px(4);
+            float x = off + (on - off) * k - (d - baseD) / 2; // the knob slides, and grows a little on hover
+            using (var b = new SolidBrush(Draw.Mix(T.Dim, T.OnAccent, k))) g.FillEllipse(b, x, r.Y + (r.Height - d) / 2, d, d);
         }
 
         protected override void OnMouseDown(MouseEventArgs e) { On = !On; Invalidate(); if (Changed != null) Changed(); }
@@ -217,15 +288,18 @@ namespace AudioSpeech
         Rectangle Minus { get { return new Rectangle(0, 0, Height, Height); } }
         Rectangle Plus { get { return new Rectangle(Width - Height, 0, Height, Height); } }
 
-        protected override void OnPaint(PaintEventArgs e)
+        static RectangleF Knob(Rectangle b) { RectangleF h = b; h.Inflate(-Dpi.Px(4), -Dpi.Px(4)); return h; }
+
+        protected override void Render(Graphics g)
         {
-            Graphics g = Begin(e);
             RectangleF r = Draw.Inset(ClientRectangle);
             Draw.Fill(g, T.Surface, r, r.Height / 2);
             Draw.Stroke(g, T.Border, r, r.Height / 2, 1);
-            foreach (Rectangle b in new[] { Minus, Plus })
+            Rectangle[] buttons = { Minus, Plus };
+            for (int i = 0; i < 2; i++)
             {
-                if (b.Contains(Mouse)) { RectangleF h = b; h.Inflate(-Dpi.Px(4), -Dpi.Px(4)); Draw.Fill(g, T.Hover, h, h.Height / 2); }
+                float h = Ease(i, buttons[i].Contains(Mouse));
+                if (h > 0) { RectangleF k = Knob(buttons[i]); Draw.Fill(g, Color.FromArgb((int)(255 * h), T.Hover), k, k.Height / 2); }
             }
             TextRenderer.DrawText(g, "", T.Icons, Minus, T.Text, Draw.Center); // minus
             TextRenderer.DrawText(g, "", T.Icons, Plus, T.Text, Draw.Center);  // plus
@@ -234,9 +308,12 @@ namespace AudioSpeech
 
         protected override void OnMouseDown(MouseEventArgs e)
         {
+            Rectangle hit = Minus.Contains(e.Location) ? Minus : Plus.Contains(e.Location) ? Plus : Rectangle.Empty;
+            if (hit.IsEmpty) return;
+            RectangleF k = Knob(hit);
+            Press(e.Location, k, k.Height / 2, RippleColor);
             int step = Value >= 50 ? 10 : Value >= 20 ? 5 : 1;
-            int v = Minus.Contains(e.Location) ? Value - step : Plus.Contains(e.Location) ? Value + step : Value;
-            v = Math.Max(1, Math.Min(1000, v));
+            int v = Math.Max(1, Math.Min(1000, hit == Minus ? Value - step : Value + step));
             if (v == Value) return;
             Value = v;
             Invalidate();
@@ -262,32 +339,29 @@ namespace AudioSpeech
         Rectangle Slot(int i) { int s = Dpi.Px(36); return new Rectangle(i * s, 0, s, s); }
         static bool Same(Color a, Color b) { return a.R == b.R && a.G == b.G && a.B == b.B; }
 
-        protected override void OnPaint(PaintEventArgs e)
+        protected override void Render(Graphics g)
         {
-            Graphics g = Begin(e);
-            bool custom = true;
+            Color value = Value;
+            int match = Array.FindIndex(Presets, c => Same(c, value));
             for (int i = 0; i <= Presets.Length; i++)
             {
                 Rectangle s = Slot(i);
-                RectangleF c = new RectangleF(s.X + Dpi.Px(5), s.Y + Dpi.Px(5), s.Width - Dpi.Px(10), s.Height - Dpi.Px(10));
-                bool isCustomSlot = i == Presets.Length;
-                Color col = isCustomSlot ? Value : Presets[i];
-                bool selected = isCustomSlot ? custom : Same(Value, col);
-                if (selected && !isCustomSlot) custom = false;
-                if (isCustomSlot && !custom)
+                bool customSlot = i == Presets.Length;
+                bool selected = customSlot ? match < 0 : i == match;
+                float h = Ease(i, s.Contains(Mouse)), sel = Ease(100 + i, selected);
+                float grow = Dpi.Px(3) * h;
+                RectangleF c = new RectangleF(s.X + Dpi.Px(6) - grow / 2, s.Y + Dpi.Px(6) - grow / 2, s.Width - Dpi.Px(12) + grow, s.Height - Dpi.Px(12) + grow);
+                if (customSlot && match >= 0)
                 {
-                    using (var pen = new Pen(T.Border, 1.5f)) g.DrawEllipse(pen, c);
-                    TextRenderer.DrawText(g, "", T.Icons, s, T.Dim, Draw.Center);
+                    using (var pen = new Pen(Draw.Mix(T.Border, T.Dim, h), 1.5f)) g.DrawEllipse(pen, c);
+                    TextRenderer.DrawText(g, "", T.Icons, s, Draw.Mix(T.Dim, T.Text, h), Draw.Center);
                 }
-                else
-                {
-                    using (var b = new SolidBrush(col)) g.FillEllipse(b, c);
-                }
-                if (selected || s.Contains(Mouse))
+                else using (var b = new SolidBrush(customSlot ? value : Presets[i])) g.FillEllipse(b, c);
+                if (sel > 0)
                 {
                     RectangleF ring = c;
                     ring.Inflate(Dpi.Px(3), Dpi.Px(3));
-                    using (var pen = new Pen(selected ? T.Text : T.Border, 1.6f)) g.DrawEllipse(pen, ring);
+                    using (var pen = new Pen(Color.FromArgb((int)(255 * sel), T.Text), 1.6f)) g.DrawEllipse(pen, ring);
                 }
             }
         }
@@ -302,11 +376,72 @@ namespace AudioSpeech
         }
     }
 
-    // Rounded text box: a borderless TextBox inside a painted frame.
+    // A vertical list of options with radio dots (microphones).
+    class Choices : Ctl
+    {
+        readonly string[] titles, subtitles;
+        int selected;
+        public event Action Changed;
+        public int Selected { get { return selected; } }
+        int RowH { get { return Dpi.Px(48); } }
+
+        public Choices(Theme t, string[] titles, string[] subtitles, int selected) : base(t)
+        {
+            this.titles = titles;
+            this.subtitles = subtitles;
+            this.selected = selected;
+            Height = RowH * titles.Length + Dpi.Px(8);
+            Cursor = Cursors.Hand;
+        }
+
+        Rectangle Row(int i) { return new Rectangle(Dpi.Px(4), Dpi.Px(4) + i * RowH, Width - Dpi.Px(8), RowH); }
+
+        protected override void Render(Graphics g)
+        {
+            RectangleF all = Draw.Inset(ClientRectangle);
+            Draw.Fill(g, T.Surface, all, Dpi.Px(14));
+            Draw.Stroke(g, T.Border, all, Dpi.Px(14), 1);
+            for (int i = 0; i < titles.Length; i++)
+            {
+                Rectangle r = Row(i);
+                float h = Ease(i, r.Contains(Mouse)), on = Ease(100 + i, i == selected);
+                if (h > 0) Draw.Fill(g, Color.FromArgb((int)(255 * h), T.Hover), r, Dpi.Px(10));
+                float cx = r.X + Dpi.Px(22), cy = r.Y + r.Height / 2f, outer = Dpi.Px(9);
+                using (var pen = new Pen(Draw.Mix(T.Dim, T.Accent, on), 1.6f)) g.DrawEllipse(pen, cx - outer, cy - outer, outer * 2, outer * 2);
+                float inner = Dpi.Px(5) * on; // the dot pops in
+                if (inner > 0.3f) using (var b = new SolidBrush(T.Accent)) g.FillEllipse(b, cx - inner, cy - inner, inner * 2, inner * 2);
+                int tx = r.X + Dpi.Px(44);
+                if (subtitles[i] == null) TextRenderer.DrawText(g, titles[i], Font, new Rectangle(tx, r.Y, r.Right - tx - Dpi.Px(8), r.Height), T.Text, Draw.Left);
+                else
+                {
+                    TextRenderer.DrawText(g, titles[i], Font, new Rectangle(tx, r.Y + Dpi.Px(5), r.Right - tx - Dpi.Px(8), r.Height / 2), T.Text, Draw.Left);
+                    TextRenderer.DrawText(g, subtitles[i], T.Small, new Rectangle(tx, r.Y + r.Height / 2, r.Right - tx - Dpi.Px(8), r.Height / 2 - Dpi.Px(5)), T.Dim, Draw.Left);
+                }
+            }
+        }
+
+        protected override void OnMouseDown(MouseEventArgs e)
+        {
+            for (int i = 0; i < titles.Length; i++)
+                if (Row(i).Contains(e.Location))
+                {
+                    Press(e.Location, Row(i), Dpi.Px(10), RippleColor);
+                    if (i == selected) return;
+                    selected = i;
+                    Invalidate();
+                    if (Changed != null) Changed();
+                    return;
+                }
+        }
+    }
+
+    // Rounded text box: a borderless TextBox inside a painted frame whose border fades to the accent on focus.
     class Field : Panel
     {
         public readonly TextBox Box;
         readonly Theme T;
+        float focus;
+        readonly Timer frame = new Timer { Interval = 15 };
 
         public Field(Theme t, string text, bool multiline, bool password)
         {
@@ -319,17 +454,26 @@ namespace AudioSpeech
             Padding = new Padding(Dpi.Px(14), top, Dpi.Px(14), Dpi.Px(8));
             Box.Dock = DockStyle.Fill;
             Controls.Add(Box);
-            Box.GotFocus += delegate { Invalidate(); };
-            Box.LostFocus += delegate { Invalidate(); };
+            frame.Tick += delegate
+            {
+                float goal = Box.Focused ? 1 : 0;
+                focus += (goal - focus) * 0.25f;
+                if (Math.Abs(goal - focus) < 0.01f) { focus = goal; frame.Stop(); }
+                Invalidate();
+            };
+            Box.GotFocus += delegate { frame.Start(); };
+            Box.LostFocus += delegate { frame.Start(); };
             Click += delegate { Box.Focus(); };
         }
+
+        protected override void Dispose(bool disposing) { if (disposing) frame.Dispose(); base.Dispose(disposing); }
 
         protected override void OnPaint(PaintEventArgs e)
         {
             e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
             RectangleF r = Draw.Inset(ClientRectangle);
             Draw.Fill(e.Graphics, T.Surface, r, Dpi.Px(10));
-            Draw.Stroke(e.Graphics, Box.Focused ? T.Accent : T.Border, r, Dpi.Px(10), Box.Focused ? 1.6f : 1f);
+            Draw.Stroke(e.Graphics, Draw.Mix(T.Border, T.Accent, focus), r, Dpi.Px(10), 1f + 0.6f * focus);
         }
     }
 
@@ -391,11 +535,13 @@ namespace AudioSpeech
         readonly Timer tick = new Timer { Interval = 50 };
         List<Entry> entries = new List<Entry>();
         readonly List<Card> cards = new List<Card>();
-        int scroll, contentHeight;
+        int scrollGoal, contentHeight;
+        float scroll;
         string copiedWav;
         DateTime copiedAt;
 
         int HeaderH { get { return Dpi.Px(44); } }
+        int MaxScroll { get { return Math.Max(0, contentHeight - Height); } }
 
         public HistoryView(Theme t, App app) : base(t)
         {
@@ -448,8 +594,7 @@ namespace AudioSpeech
             int textW = Math.Max(Dpi.Px(80), pad + w - inner - textX);
             foreach (Entry e in entries)
             {
-                string shown = BodyText(e);
-                int textH = TextRenderer.MeasureText(shown, Font, new Size(textW, int.MaxValue), TextFormatFlags.WordBreak | TextFormatFlags.NoPadding | TextFormatFlags.TextBoxControl).Height;
+                int textH = TextRenderer.MeasureText(BodyText(e), Font, new Size(textW, int.MaxValue), TextFormatFlags.WordBreak | TextFormatFlags.NoPadding | TextFormatFlags.TextBoxControl).Height;
                 int headH = Dpi.Px(32);
                 int h = inner + headH + Dpi.Px(4) + textH + inner + Dpi.Px(8);
                 var c = new Card { E = e, R = new Rectangle(pad, y, w, h) };
@@ -463,7 +608,8 @@ namespace AudioSpeech
                 y += h + Dpi.Px(10);
             }
             contentHeight = y + Dpi.Px(10);
-            scroll = Math.Max(0, Math.Min(scroll, contentHeight - Height));
+            scrollGoal = Math.Max(0, Math.Min(scrollGoal, MaxScroll));
+            scroll = Math.Min(scroll, MaxScroll);
         }
 
         string BodyText(Entry e)
@@ -477,7 +623,7 @@ namespace AudioSpeech
 
         protected override void OnMouseWheel(MouseEventArgs e)
         {
-            scroll = Math.Max(0, Math.Min(scroll - e.Delta * Dpi.Px(60) / 120, contentHeight - Height));
+            scrollGoal = Math.Max(0, Math.Min(scrollGoal - e.Delta * Dpi.Px(90) / 120, MaxScroll));
             Invalidate();
         }
 
@@ -495,9 +641,11 @@ namespace AudioSpeech
             return d.ToString("d MMM, HH:mm", culture);
         }
 
-        protected override void OnPaint(PaintEventArgs pe)
+        int Dy { get { return -(int)Math.Round(scroll); } }
+
+        protected override void Render(Graphics g)
         {
-            Graphics g = Begin(pe);
+            scroll = Ease(-1, scrollGoal, 0.3f); // smooth scrolling
             int pad = Dpi.Px(20);
             string count = entries.Count == 0 ? "" : L.T("Записей: ", "Recordings: ") + entries.Count + L.T(" · хранятся последние ", " · keeping the last ") + app.Settings.KeepRecordings;
 
@@ -509,21 +657,22 @@ namespace AudioSpeech
                 TextRenderer.DrawText(g, L.T("Нажмите ", "Press ") + Hotkey.Parse(app.Settings.Hotkey) + L.T(" и говорите", " and speak"), Font, new Rectangle(0, mid.Bottom + Dpi.Px(44), Width, Dpi.Px(24)), T.Dim, Draw.Center);
             }
 
-            foreach (Card c in cards)
+            g.SetClip(new Rectangle(0, HeaderH, Width, Height - HeaderH));
+            for (int i = 0; i < cards.Count; i++)
             {
-                Rectangle r = c.R;
-                r.Offset(0, -scroll);
+                Rectangle r = cards[i].R;
+                r.Offset(0, Dy);
                 if (r.Bottom < HeaderH || r.Top > Height) continue;
-                g.SetClip(new Rectangle(0, HeaderH, Width, Height - HeaderH));
-                DrawCard(g, c, -scroll);
-                g.ResetClip();
+                DrawCard(g, cards[i], i, Dy);
             }
+            g.ResetClip();
 
             // Fixed header over the scrolling list.
             using (var b = new SolidBrush(T.Bg)) g.FillRectangle(b, 0, 0, Width, HeaderH);
             TextRenderer.DrawText(g, count, T.Small, new Rectangle(pad, 0, Width - pad * 2 - Dpi.Px(160), HeaderH), T.Dim, Draw.Left);
             Rectangle fr = FolderRect;
-            if (fr.Contains(Mouse)) Draw.Fill(g, T.Hover, fr, fr.Height / 2f);
+            float fh = Ease(-2, fr.Contains(Mouse));
+            if (fh > 0) Draw.Fill(g, Color.FromArgb((int)(255 * fh), T.Hover), fr, fr.Height / 2f);
             TextRenderer.DrawText(g, "", T.Icons, new Rectangle(fr.X + Dpi.Px(8), fr.Y, Dpi.Px(24), fr.Height), T.Accent, Draw.Center);
             TextRenderer.DrawText(g, L.T("Открыть папку", "Open folder"), T.Small, new Rectangle(fr.X + Dpi.Px(34), fr.Y, fr.Width - Dpi.Px(38), fr.Height), T.Text, Draw.Left);
 
@@ -531,85 +680,97 @@ namespace AudioSpeech
             {
                 float trackH = Height - HeaderH - Dpi.Px(8);
                 float thumbH = Math.Max(Dpi.Px(30), trackH * (Height - HeaderH) / (contentHeight - HeaderH));
-                float thumbY = HeaderH + Dpi.Px(4) + (trackH - thumbH) * scroll / Math.Max(1, contentHeight - Height);
+                float thumbY = HeaderH + Dpi.Px(4) + (trackH - thumbH) * scroll / Math.Max(1, MaxScroll);
                 Draw.Fill(g, T.Border, new RectangleF(Width - Dpi.Px(7), thumbY, Dpi.Px(4), thumbH), Dpi.Px(2));
             }
         }
 
-        void DrawCard(Graphics g, Card c, int dy)
+        void DrawCard(Graphics g, Card c, int index, int dy)
         {
             Rectangle r = c.R; r.Offset(0, dy);
             Point m = new Point(Mouse.X, Mouse.Y - dy);
-            bool hover = c.R.Contains(m);
-            Draw.Fill(g, hover ? T.Hover : T.Surface, r, Dpi.Px(14));
+            int key = index * 10;
+            float hover = Ease(key, c.R.Contains(m) && Mouse.Y >= HeaderH);
+            Draw.Fill(g, Draw.Mix(T.Surface, T.Hover, hover), r, Dpi.Px(14));
             if (!T.Dark) Draw.Stroke(g, T.Border, Draw.Inset(r), Dpi.Px(14), 1);
 
             bool current = player.Current == c.E.Wav;
             bool playing = current && !player.Paused;
-            Rectangle play = c.Play; play.Offset(0, dy);
-            using (var b = new SolidBrush(current || c.Play.Contains(m) ? T.Accent : Color.FromArgb(T.Dark ? 48 : 36, T.Accent))) g.FillEllipse(b, play);
-            TextRenderer.DrawText(g, playing ? "" : "", T.Icons, play, current || c.Play.Contains(m) ? T.OnAccent : T.Accent, Draw.Center);
+            float ph = Ease(key + 1, current || c.Play.Contains(m));
+            RectangleF play = c.Play; play.Offset(0, dy);
+            play.Inflate(Dpi.Px(2) * ph, Dpi.Px(2) * ph); // the play button swells a little on hover
+            using (var b = new SolidBrush(Draw.Mix(Color.FromArgb(T.Dark ? 48 : 36, T.Accent), T.Accent, ph))) g.FillEllipse(b, play);
+            TextRenderer.DrawText(g, playing ? "" : "", T.Icons, Rectangle.Round(play), Draw.Mix(T.Accent, T.OnAccent, ph), Draw.Center);
 
             string time = current ? Clock(player.Position / 1000.0) + " / " + Clock(c.E.Seconds) : Clock(c.E.Seconds);
             Rectangle head = new Rectangle(c.Body.X, r.Y + Dpi.Px(16), c.Copy.X - c.Body.X - Dpi.Px(8), Dpi.Px(32));
             TextRenderer.DrawText(g, When(c.E.When) + "  ·  " + time, T.Small, head, T.Dim, Draw.Left);
 
             bool copied = copiedWav == c.E.Wav && (DateTime.UtcNow - copiedAt).TotalSeconds < 1.5;
-            IconButton(g, c.Copy, dy, m, copied ? "" : "", copied ? T.Accent : (Color?)null, c.E.Text.Length > 0);
-            IconButton(g, c.Retry, dy, m, "", null, !c.E.Busy);
-            IconButton(g, c.Del, dy, m, "", null, true);
+            IconButton(g, c.Copy, key + 2, dy, m, copied ? "" : "", copied ? T.Accent : (Color?)null, c.E.Text.Length > 0, hover);
+            IconButton(g, c.Retry, key + 3, dy, m, "", null, !c.E.Busy, hover);
+            IconButton(g, c.Del, key + 4, dy, m, "", null, true, hover);
 
             Rectangle body = c.Body; body.Offset(0, dy);
             bool placeholder = c.E.Busy || c.E.Error != null || c.E.Text.Length == 0;
             TextRenderer.DrawText(g, BodyText(c.E), Font, body, placeholder ? T.Dim : T.Text, TextFormatFlags.WordBreak | TextFormatFlags.NoPadding | TextFormatFlags.TextBoxControl);
 
             Rectangle bar = c.Bar; bar.Offset(0, dy);
-            if (current)
+            float show = Ease(key + 5, current);
+            if (show > 0)
             {
-                Draw.Fill(g, T.Border, bar, bar.Height / 2f);
-                float frac = player.Length > 0 ? Math.Min(1f, player.Position / (float)player.Length) : 0f;
-                Draw.Fill(g, T.Accent, new RectangleF(bar.X, bar.Y, Math.Max(bar.Height, bar.Width * frac), bar.Height), bar.Height / 2f);
+                Draw.Fill(g, Color.FromArgb((int)(255 * show), T.Border), bar, bar.Height / 2f);
+                float frac = current && player.Length > 0 ? Math.Min(1f, player.Position / (float)player.Length) : 0f;
+                Draw.Fill(g, Color.FromArgb((int)(255 * show), T.Accent), new RectangleF(bar.X, bar.Y, Math.Max(bar.Height, bar.Width * frac), bar.Height), bar.Height / 2f);
             }
         }
 
-        void IconButton(Graphics g, Rectangle rect, int dy, Point m, string glyph, Color? color, bool enabled)
+        void IconButton(Graphics g, Rectangle rect, int key, int dy, Point m, string glyph, Color? color, bool enabled, float cardHover)
         {
             Rectangle r = rect; r.Offset(0, dy);
-            bool hover = enabled && rect.Contains(m);
-            if (hover) using (var b = new SolidBrush(T.Dark ? Color.FromArgb(24, 255, 255, 255) : Color.FromArgb(16, 0, 0, 0))) g.FillEllipse(b, r);
-            Color c = color ?? (!enabled ? Color.FromArgb(90, T.Dim) : hover ? T.Text : T.Dim);
+            float h = Ease(key, enabled && rect.Contains(m));
+            if (h > 0) using (var b = new SolidBrush(Color.FromArgb((int)((T.Dark ? 28 : 18) * h), T.Dark ? Color.White : Color.Black))) g.FillEllipse(b, r);
+            Color idle = Draw.Mix(Color.FromArgb(150, T.Dim), T.Dim, cardHover); // icons brighten when the card is hovered
+            Color c = color ?? (!enabled ? Color.FromArgb(80, T.Dim) : Draw.Mix(idle, T.Text, h));
             TextRenderer.DrawText(g, glyph, T.Icons, r, c, Draw.Center);
         }
 
         Card At(Point p)
         {
-            var q = new Point(p.X, p.Y + scroll);
             if (p.Y < HeaderH) return null;
+            var q = new Point(p.X, p.Y - Dy);
             foreach (Card c in cards) if (c.R.Contains(q)) return c;
             return null;
         }
+
+        static Rectangle InflatedBar(Card c) { Rectangle b = c.Bar; b.Inflate(0, Dpi.Px(6)); return b; }
 
         protected override void OnMouseMove(MouseEventArgs e)
         {
             base.OnMouseMove(e);
             Card c = At(e.Location);
-            var q = new Point(e.X, e.Y + scroll);
+            var q = new Point(e.X, e.Y - Dy);
             bool hand = FolderRect.Contains(e.Location) || (c != null && (c.Play.Contains(q) || c.Copy.Contains(q) || c.Retry.Contains(q) || c.Del.Contains(q) || (player.Current == c.E.Wav && InflatedBar(c).Contains(q))));
             Cursor = hand ? Cursors.Hand : Cursors.Default;
         }
 
-        static Rectangle InflatedBar(Card c) { Rectangle b = c.Bar; b.Inflate(0, Dpi.Px(6)); return b; }
+        void Ripple(Rectangle target, Point at, bool round, Color color)
+        {
+            Rectangle r = target; r.Offset(0, Dy);
+            Press(at, r, round ? r.Height / 2f : Dpi.Px(14), color);
+        }
 
         protected override void OnMouseDown(MouseEventArgs e)
         {
-            if (FolderRect.Contains(e.Location)) { App.OpenFolder(); return; }
+            if (FolderRect.Contains(e.Location)) { Press(e.Location, FolderRect, FolderRect.Height / 2f, T.Accent); App.OpenFolder(); return; }
             Card c = At(e.Location);
             if (c == null) return;
-            var q = new Point(e.X, e.Y + scroll);
-            if (c.Play.Contains(q)) { player.Toggle(c.E.Wav); tick.Start(); }
+            var q = new Point(e.X, e.Y - Dy);
+            if (c.Play.Contains(q)) { Ripple(c.Play, e.Location, true, Color.White); player.Toggle(c.E.Wav); tick.Start(); }
             else if (player.Current == c.E.Wav && InflatedBar(c).Contains(q)) player.Seek((q.X - c.Bar.X) / (double)c.Bar.Width);
             else if (c.Copy.Contains(q) && c.E.Text.Length > 0)
             {
+                Ripple(c.Copy, e.Location, true, RippleColor);
                 Clipboard.SetDataObject(c.E.Text, true, 10, 50);
                 copiedWav = c.E.Wav;
                 copiedAt = DateTime.UtcNow;
@@ -617,6 +778,7 @@ namespace AudioSpeech
             }
             else if (c.Retry.Contains(q) && !c.E.Busy)
             {
+                Ripple(c.Retry, e.Location, true, RippleColor);
                 Entry entry = c.E;
                 entry.Busy = true;
                 entry.Error = null;
@@ -644,6 +806,7 @@ namespace AudioSpeech
                 catch (Exception ex) { Log.Write("delete: " + ex.Message); }
                 Reload();
             }
+            else Ripple(c.R, e.Location, false, RippleColor);
             Invalidate();
         }
     }
@@ -653,7 +816,7 @@ namespace AudioSpeech
         readonly App app;
         readonly MainWindow window;
         readonly Theme T;
-        readonly List<Control[]> rows = new List<Control[]>(); // { caption, control, fullWidth? }
+        readonly List<Control[]> rows = new List<Control[]>(); // { caption, control }
         readonly List<bool> full = new List<bool>();
         readonly List<int> widths = new List<int>(); // wanted widths; the actual one may be narrower
         readonly Timer saveLater = new Timer { Interval = 600 };
@@ -687,6 +850,23 @@ namespace AudioSpeech
             var mode = new Seg(t, new[] { L.T("Удержание или нажатие", "Hold or toggle"), L.T("Нажатие", "Toggle"), L.T("Удержание", "Hold") }, Math.Max(0, Array.IndexOf(App.Modes, s.Mode)));
             mode.Changed += delegate { s.Mode = App.Modes[mode.Selected]; app.ApplySettings(); };
             Add(L.T("Режим", "Mode"), L.T("Короткое нажатие включает и выключает запись. Если держать клавишу, запись идёт, пока держите.", "A short press starts and stops recording. Holding the key records while you hold it."), mode, true, 0);
+
+            List<string> devices = Recorder.Devices();
+            var titles = new List<string> { L.T("Автоматически", "Automatic") };
+            var subs = new List<string> { L.T("Микрофон Windows по умолчанию, а если он недоступен, первый рабочий", "The Windows default microphone, or the first one that works") };
+            var keys = new List<string> { "" }; // what is stored: the waveIn name
+            foreach (string d in devices) { titles.Add(Recorder.FullName(d)); subs.Add(null); keys.Add(d); }
+            int micIndex = string.IsNullOrEmpty(s.Microphone) ? 0 : devices.IndexOf(s.Microphone) + 1;
+            if (micIndex <= 0 && !string.IsNullOrEmpty(s.Microphone))
+            {
+                titles.Add(s.Microphone);
+                keys.Add(s.Microphone);
+                subs.Add(L.T("Сейчас не подключён, используется автоматический выбор", "Not connected now; automatic is used"));
+                micIndex = titles.Count - 1;
+            }
+            var mics = new Choices(t, titles.ToArray(), subs.ToArray(), micIndex);
+            mics.Changed += delegate { s.Microphone = keys[mics.Selected]; app.ApplySettings(); };
+            Add(L.T("Микрофон", "Microphone"), null, mics, true, 0);
 
             var lang = new Seg(t, new[] { "Русский", "English" }, s.Language == "en" ? 1 : 0);
             lang.Changed += delegate { s.Language = lang.Selected == 1 ? "en" : "ru"; Rebuild(); };
@@ -743,7 +923,10 @@ namespace AudioSpeech
         {
             saveLater.Stop();
             app.ApplySettings();
-            BeginInvoke(new Action(window.Rebuild)); // not inside the click handler of a control that is about to be disposed
+            // Let the selection animate, then rebuild (never inside the handler of a control that is about to be disposed).
+            var t = new Timer { Interval = 180 };
+            t.Tick += delegate { t.Dispose(); window.Rebuild(); };
+            t.Start();
         }
 
         protected override void Dispose(bool disposing)
@@ -794,9 +977,8 @@ namespace AudioSpeech
             return h;
         }
 
-        protected override void OnPaint(PaintEventArgs e)
+        protected override void Render(Graphics g)
         {
-            Graphics g = Begin(e);
             using (var f = new Font(T.Body, FontStyle.Bold)) TextRenderer.DrawText(g, title, f, new Rectangle(0, 0, Width, Dpi.Px(22)), T.Text, Draw.Left);
             if (desc != null) TextRenderer.DrawText(g, desc, T.Small, new Rectangle(0, Dpi.Px(22), Width, Height - Dpi.Px(22)), T.Dim, TextFormatFlags.WordBreak | TextFormatFlags.NoPadding);
         }
@@ -806,9 +988,8 @@ namespace AudioSpeech
     {
         public Header(Theme t) : base(t) { Height = Dpi.Px(68); }
 
-        protected override void OnPaint(PaintEventArgs e)
+        protected override void Render(Graphics g)
         {
-            Graphics g = Begin(e);
             int x = Dpi.Px(22), cy = Height / 2;
             using (var halo = new SolidBrush(Color.FromArgb(60, T.Accent))) g.FillEllipse(halo, x, cy - Dpi.Px(9), Dpi.Px(18), Dpi.Px(18));
             using (var dot = new SolidBrush(T.Accent)) g.FillEllipse(dot, x + Dpi.Px(4), cy - Dpi.Px(5), Dpi.Px(10), Dpi.Px(10));
@@ -859,7 +1040,8 @@ namespace AudioSpeech
             var tabs = new Seg(theme, new[] { L.T("История", "History"), L.T("Настройки", "Settings") }, tab) { Width = Dpi.Px(250), Anchor = AnchorStyles.Top | AnchorStyles.Right };
             tabs.Location = new Point(ClientSize.Width - tabs.Width - Dpi.Px(20), (header.Height - tabs.Height) / 2);
             header.Controls.Add(tabs);
-            tabs.Changed += delegate { tab = tabs.Selected; BeginInvoke(new Action(Rebuild)); };
+            // Let the selection slide before the page is swapped.
+            tabs.Changed += delegate { tab = tabs.Selected; var t = new Timer { Interval = 180 }; t.Tick += delegate { t.Dispose(); Rebuild(); }; t.Start(); };
 
             Control content;
             if (tab == 0) content = history = new HistoryView(theme, app);
@@ -873,7 +1055,7 @@ namespace AudioSpeech
             ApplyTitleBar();
         }
 
-        // Dark/light title bar in the panel colour (Windows 10 2004+ / Windows 11; ignored elsewhere).
+        // Dark/light title bar in the window colour (Windows 10 2004+ / Windows 11; ignored elsewhere).
         void ApplyTitleBar()
         {
             int dark = theme.Dark ? 1 : 0;

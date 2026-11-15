@@ -15,7 +15,7 @@ Speech-to-text, using Gemini. A small Windows tray app: press or hold a hotkey, 
 - Pastes the text with `Ctrl+V` and then puts your clipboard back (text or image).
 - History window: listen to your recordings, copy or re-transcribe their text, delete them. The last N recordings (default 10) are kept, older ones are deleted automatically.
 - Dark or light theme, any accent colour, Russian or English interface. Optional start with Windows.
-- Crisp on high-DPI screens. One `.exe`, no installer, no dependencies.
+- Smooth hover and press animations, crisp on high-DPI screens. One `.exe`, no installer, no dependencies.
 
 ## Getting started
 
@@ -35,10 +35,13 @@ To start AudioSpeech with Windows, turn on **Start with Windows** in Settings.
 | Gemini model | Tried first. Fallbacks: `gemini-3.5-flash`, `gemini-flash-lite-latest`, `gemini-flash-latest`. |
 | Gemini API key | Stored in `%APPDATA%\AudioSpeech\settings.json`, on your computer only. |
 | Gemini hint | Added to the transcription request. Name your languages, names or terms, for example: *"The speaker usually speaks Russian and may switch to German. Music-theory terms are common."* |
+| Microphone | Automatic (the Windows default, or the first one that works) or a specific device. |
 | Language | Russian or English interface. |
 | Keep recordings | How many recordings to keep in `%APPDATA%\AudioSpeech\recordings`. |
 | Start with Windows | Adds AudioSpeech to your user's startup programs. |
 | Theme, Colour | Look of the window and the floating panel. |
+
+A `settings.json` placed next to `AudioSpeech.exe` is used as the starting settings on first run.
 
 Audio goes only to the Gemini API (`generativelanguage.googleapis.com`). There is no other network traffic and no telemetry.
 
@@ -55,7 +58,6 @@ This runs the built-in `csc.exe` and a self-test. Test flags: `--selftest`, `--r
 ## Limitations
 
 - Windows only.
-- Uses the default Windows microphone (choose it in Windows sound settings).
 - The cancel key is always `Esc`.
 
 ---
@@ -73,7 +75,7 @@ This runs the built-in `csc.exe` and a self-test. Test flags: `--selftest`, `--r
 - Текст вставляется через `Ctrl+V`, потом ваш буфер обмена восстанавливается (текст или картинка).
 - Окно истории: записи можно прослушать, скопировать или заново расшифровать их текст, удалить. Хранятся последние N записей (по умолчанию 10), старые удаляются сами.
 - Тёмная или светлая тема, любой цвет, русский или английский интерфейс, автозапуск с Windows.
-- Чёткая картинка при любом масштабе экрана. Один `.exe`, без установки и зависимостей.
+- Выбор микрофона или автоматический режим, плавные анимации, чёткая картинка при любом масштабе. Один `.exe`, без установки и зависимостей.
 
 ### Как начать
 
