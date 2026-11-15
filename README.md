@@ -13,18 +13,18 @@ Speech-to-text, using Gemini. A small Windows tray app: press or hold a hotkey, 
 - A floating panel shows the microphone level. `Esc` or the cross cancels a recording.
 - Transcribes with the Gemini API. If a model is down or overloaded, the next one is tried.
 - Pastes the text with `Ctrl+V` and then puts your clipboard back (text or image).
-- Keeps the last N recordings (default 10) with their transcripts. Older ones are deleted automatically. If Gemini fails, retry the last recording from the tray menu.
-- Dark or light panel, any accent colour, Russian or English interface.
+- History window: listen to your recordings, copy or re-transcribe their text, delete them. The last N recordings (default 10) are kept, older ones are deleted automatically.
+- Dark or light theme, any accent colour, Russian or English interface. Optional start with Windows.
 - Crisp on high-DPI screens. One `.exe`, no installer, no dependencies.
 
 ## Getting started
 
 1. Get a Gemini API key at [Google AI Studio](https://aistudio.google.com/apikey).
 2. Download `AudioSpeech.exe` from [Releases](../../releases), or build it yourself (see below).
-3. Run it, double-click the tray icon, paste the key into **Gemini API key** and click **Save**. Instead of entering the key, you can set the `GEMINI_API_KEY` environment variable.
+3. Run it, click the tray icon, open **Settings** and paste the key into **Gemini API key** (settings save automatically). Instead of entering the key, you can set the `GEMINI_API_KEY` environment variable.
 4. Put the cursor in any text field, press the hotkey and speak.
 
-To start AudioSpeech with Windows, put a shortcut to it in the startup folder (`Win+R`, then `shell:startup`).
+To start AudioSpeech with Windows, turn on **Start with Windows** in Settings.
 
 ## Settings
 
@@ -37,7 +37,8 @@ To start AudioSpeech with Windows, put a shortcut to it in the startup folder (`
 | Gemini hint | Added to the transcription request. Name your languages, names or terms, for example: *"The speaker usually speaks Russian and may switch to German. Music-theory terms are common."* |
 | Language | Russian or English interface. |
 | Keep recordings | How many recordings to keep in `%APPDATA%\AudioSpeech\recordings`. |
-| Panel theme, Colour | Look of the floating panel. |
+| Start with Windows | Adds AudioSpeech to your user's startup programs. |
+| Theme, Colour | Look of the window and the floating panel. |
 
 Audio goes only to the Gemini API (`generativelanguage.googleapis.com`). There is no other network traffic and no telemetry.
 
@@ -49,7 +50,7 @@ You need Windows with .NET Framework 4.x, which every Windows 10 and 11 has. No 
 build.cmd
 ```
 
-This runs the built-in `csc.exe` and a self-test. Test flags: `--selftest`, `--rectest` (records 3 s from the microphone), `--looktest` (renders the panel), `--test file.wav` (transcribes a 16 kHz mono WAV into the log).
+This runs the built-in `csc.exe` and a self-test. Test flags: `--selftest`, `--rectest` (records 3 s from the microphone), `--looktest` (renders the panel), `--uitest` (renders the window), `--test file.wav` (transcribes a 16 kHz mono WAV into the log).
 
 ## Limitations
 
@@ -70,18 +71,18 @@ This runs the built-in `csc.exe` and a self-test. Test flags: `--selftest`, `--r
 - Плавающая панелька показывает уровень звука. `Esc` или крестик отменяют запись.
 - Расшифровка через Gemini API. Если модель недоступна или перегружена, программа пробует следующую.
 - Текст вставляется через `Ctrl+V`, потом ваш буфер обмена восстанавливается (текст или картинка).
-- Хранятся последние N записей (по умолчанию 10) вместе с текстом, старые удаляются сами. Если Gemini не ответил, последнюю запись можно расшифровать заново из меню в трее.
-- Тёмная или светлая панель, любой цвет, русский или английский интерфейс.
+- Окно истории: записи можно прослушать, скопировать или заново расшифровать их текст, удалить. Хранятся последние N записей (по умолчанию 10), старые удаляются сами.
+- Тёмная или светлая тема, любой цвет, русский или английский интерфейс, автозапуск с Windows.
 - Чёткая картинка при любом масштабе экрана. Один `.exe`, без установки и зависимостей.
 
 ### Как начать
 
 1. Получите ключ Gemini API в [Google AI Studio](https://aistudio.google.com/apikey).
 2. Скачайте `AudioSpeech.exe` из [Releases](../../releases) или соберите сами (`build.cmd`).
-3. Запустите, дважды щёлкните по значку в трее, вставьте ключ в поле **Ключ Gemini API** и нажмите **Сохранить**. Вместо этого можно задать переменную окружения `GEMINI_API_KEY`.
+3. Запустите, щёлкните по значку в трее, откройте **Настройки** и вставьте ключ в поле **Ключ Gemini API** (настройки сохраняются сами). Вместо этого можно задать переменную окружения `GEMINI_API_KEY`.
 4. Поставьте курсор в любое поле ввода, нажмите горячую клавишу и говорите.
 
-Чтобы программа запускалась вместе с Windows, положите ярлык на неё в папку автозагрузки (`Win+R`, потом `shell:startup`).
+Чтобы программа запускалась вместе с Windows, включите **Запускать вместе с Windows** в настройках.
 
 В поле **Подсказка Gemini** можно написать, на каких языках вы говорите и какие слова часто встречаются. Это заметно улучшает распознавание терминов.
 

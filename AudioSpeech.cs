@@ -37,6 +37,7 @@ namespace AudioSpeech
             L.Lang = Settings.Load().Language;
             if (args.Length > 0 && args[0] == "--rectest") return SelfTest.Record();
             if (args.Length > 0 && args[0] == "--looktest") return SelfTest.Looks();
+            if (args.Length > 0 && args[0] == "--uitest") return SelfTest.Ui();
             bool created;
             using (new Mutex(true, "AudioSpeech_single_instance", out created))
             {
@@ -165,10 +166,10 @@ namespace AudioSpeech
     class App : ApplicationContext
     {
         enum State { Idle, Recording, Working }
-        static readonly string[] Modes = { "hold_or_toggle", "toggle", "hold" };
+        public static readonly string[] Modes = { "hold_or_toggle", "toggle", "hold" };
         public static string RecordingsDir { get { return Path.Combine(Settings.Dir, "recordings"); } }
 
-        static FileInfo[] Recordings() { return Recordings(RecordingsDir); }
+        public static FileInfo[] Recordings() { return Recordings(RecordingsDir); }
 
         static FileInfo[] Recordings(string path)
         {
@@ -203,7 +204,7 @@ namespace AudioSpeech
             }
         }
 
-        static void SaveTranscript(string wavPath, string text)
+        public static void SaveTranscript(string wavPath, string text)
         {
             if (wavPath == null || string.IsNullOrEmpty(text)) return;
             try { File.WriteAllText(Path.ChangeExtension(wavPath, ".txt"), text, Encoding.UTF8); } catch (Exception e) { Log.Write("save txt: " + e.Message); }
@@ -220,7 +221,8 @@ namespace AudioSpeech
         DateTime pressedAt;
         IntPtr hook;
         readonly Native.HookProc hookProc; // kept in a field so the GC does not collect the callback
-        SettingsForm settingsForm;
+        MainWindow window;
+        public static bool Testing; // --uitest: no keyboard hook, no balloon
         public Action<Hotkey> Capture; // set while the settings window records a new hotkey
 
         public App()
@@ -233,10 +235,11 @@ namespace AudioSpeech
             overlay.CancelClicked += Cancel;
 
             tray = new NotifyIcon { Icon = MakeIcon(Settings.AccentColor), Visible = true, ContextMenuStrip = BuildMenu() };
-            tray.DoubleClick += delegate { ShowSettings(); };
+            tray.MouseClick += (o, e) => { if (e.Button == MouseButtons.Left) ShowWindow(0); };
             UpdateTrayText();
 
             hookProc = HookCallback;
+            if (Testing) return;
             hook = Native.SetWindowsHookEx(13 /* WH_KEYBOARD_LL */, hookProc, Native.GetModuleHandle(null), 0);
             if (hook == IntPtr.Zero) Notify(L.T("Не удалось перехватить клавиатуру, горячая клавиша не работает.", "Could not hook the keyboard; the hotkey will not work."), ToolTipIcon.Error);
             else Notify(L.T("Диктовка: ", "Dictation: ") + hotkey + L.T(". Отмена: Esc.", ". Cancel: Esc."), ToolTipIcon.Info);
@@ -245,9 +248,8 @@ namespace AudioSpeech
         ContextMenuStrip BuildMenu()
         {
             var menu = new ContextMenuStrip();
-            menu.Items.Add(L.T("Настройки…", "Settings…"), null, delegate { ShowSettings(); });
-            menu.Items.Add(L.T("Расшифровать последнюю запись в буфер обмена", "Transcribe last recording to clipboard"), null, delegate { RetryLast(); });
-            menu.Items.Add(L.T("Открыть папку с записями", "Open recordings folder"), null, delegate { Directory.CreateDirectory(RecordingsDir); Process.Start("explorer.exe", "\"" + RecordingsDir + "\""); });
+            menu.Items.Add(L.T("История записей", "Recordings"), null, delegate { ShowWindow(0); });
+            menu.Items.Add(L.T("Настройки", "Settings"), null, delegate { ShowWindow(1); });
             menu.Items.Add(new ToolStripSeparator());
             menu.Items.Add(L.T("Выход", "Exit"), null, delegate { ExitThread(); });
             return menu;
@@ -361,6 +363,7 @@ namespace AudioSpeech
             overlay.ShowWorking();
             // Keep the audio so a failed request can be retried from the tray menu.
             string wavPath = SaveRecording(pcm);
+            RefreshHistory();
             Settings s = Settings;
             ThreadPool.QueueUserWorkItem(delegate
             {
@@ -375,12 +378,13 @@ namespace AudioSpeech
 
         void Finish(int gen, string text, string error)
         {
+            RefreshHistory();
             if (gen != generation || state != State.Working) return; // cancelled meanwhile
             state = State.Idle;
             if (error != null)
             {
                 overlay.ShowMessage(L.T("Ошибка Gemini", "Gemini error"), 2500);
-                Notify(error + L.T("\nЗапись сохранена: меню в трее → «Расшифровать последнюю запись».", "\nThe recording is saved: tray menu → \"Transcribe last recording\"."), ToolTipIcon.Error);
+                Notify(error + L.T("\nЗапись сохранена: откройте историю и расшифруйте её снова.", "\nThe recording is saved: open the history and transcribe it again."), ToolTipIcon.Error);
                 return;
             }
             overlay.HideOverlay();
@@ -396,40 +400,52 @@ namespace AudioSpeech
             overlay.HideOverlay();
         }
 
-        void RetryLast()
+        public Icon TrayIcon { get { return tray.Icon; } }
+
+        public static void OpenFolder()
         {
-            FileInfo[] recs = Recordings();
-            if (recs.Length == 0) { Notify(L.T("Сохранённых записей пока нет.", "No saved recordings yet."), ToolTipIcon.Info); return; }
-            string wavPath = recs[0].FullName;
+            Directory.CreateDirectory(RecordingsDir);
+            // Via the shell, not a new explorer.exe: that one reported the folder as unavailable.
+            Process.Start(new ProcessStartInfo { FileName = RecordingsDir, UseShellExecute = true });
+        }
+
+        public void ShowWindow(int tab)
+        {
+            if (window == null || window.IsDisposed)
+            {
+                window = new MainWindow(this, tab);
+                window.FormClosed += delegate { Capture = null; window = null; };
+                window.Show();
+            }
+            else
+            {
+                window.ShowTab(tab);
+                if (window.WindowState == FormWindowState.Minimized) window.WindowState = FormWindowState.Normal;
+            }
+            window.Activate();
+        }
+
+        void RefreshHistory() { if (window != null && !window.IsDisposed) window.RefreshHistory(); }
+
+        // Transcribes a saved recording again (history "retry"); done runs on the UI thread with an error or null.
+        public void Retranscribe(string wavPath, Action<string> done)
+        {
             Settings s = Settings;
             ThreadPool.QueueUserWorkItem(delegate
             {
-                string text = null, error = null;
+                string error = null;
                 try
                 {
                     byte[] wav = File.ReadAllBytes(wavPath);
                     byte[] pcm = new byte[wav.Length - 44];
                     Buffer.BlockCopy(wav, 44, pcm, 0, pcm.Length);
-                    text = Gemini.Transcribe(pcm, s);
+                    string text = Gemini.Transcribe(pcm, s);
+                    if (text.Length == 0) error = L.T("В записи не найдено речи.", "No speech found in the recording.");
                     SaveTranscript(wavPath, text);
                 }
                 catch (Exception e) { error = e.Message; Log.Write("retry: " + e); }
-                overlay.BeginInvoke(new Action(() =>
-                {
-                    if (error != null) Notify(error, ToolTipIcon.Error);
-                    else if (string.IsNullOrEmpty(text)) Notify(L.T("В записи не найдено речи.", "No speech found in the recording."), ToolTipIcon.Info);
-                    else { Clipboard.SetDataObject(text, true, 10, 50); Notify(L.T("Текст в буфере обмена, вставьте Ctrl+V.", "Text is on the clipboard, paste with Ctrl+V."), ToolTipIcon.Info); }
-                }));
+                overlay.BeginInvoke(new Action(() => done(error)));
             });
-        }
-
-        void ShowSettings()
-        {
-            if (settingsForm != null && !settingsForm.IsDisposed) { settingsForm.Activate(); return; }
-            settingsForm = new SettingsForm(this, Modes);
-            settingsForm.FormClosed += delegate { Capture = null; };
-            settingsForm.Show();
-            settingsForm.Activate();
         }
 
         public void ApplySettings()
@@ -651,7 +667,7 @@ namespace AudioSpeech
                 req.Method = "POST";
                 req.ContentType = "application/json";
                 req.Headers["x-goog-api-key"] = key;
-                req.Timeout = req.ReadWriteTimeout = 20000 + pcmBytes / 320; // +1 s per 10 s of audio
+                req.Timeout = req.ReadWriteTimeout = 9000 + pcmBytes / 320; // +1 s per 10 s of audio
                 try
                 {
                     using (Stream st = req.GetRequestStream()) st.Write(data, 0, data.Length);
@@ -927,142 +943,6 @@ namespace AudioSpeech
         protected override void OnMouseLeave(EventArgs e) { if (hover) { hover = false; Render(); } }
     }
 
-    class SettingsForm : Form
-    {
-        readonly App app;
-        readonly string[] modes;
-        Hotkey pending;
-        readonly Button keyBtn;
-        readonly ComboBox modeBox;
-        readonly TextBox modelBox, keyBox;
-        readonly ComboBox themeBox;
-        readonly NumericUpDown keepBox;
-        readonly ComboBox langBox;
-        readonly TextBox hintBox;
-        readonly Button colorBtn;
-        Color accent;
-        readonly TableLayoutPanel table = new TableLayoutPanel { ColumnCount = 2, AutoSize = true, Dock = DockStyle.Fill };
-
-        public SettingsForm(App app, string[] modes)
-        {
-            this.app = app;
-            this.modes = modes;
-            Settings s = app.Settings;
-            pending = Hotkey.Parse(s.Hotkey);
-            Text = L.T("AudioSpeech — настройки", "AudioSpeech — settings");
-            FormBorderStyle = FormBorderStyle.FixedDialog;
-            MaximizeBox = MinimizeBox = false;
-            StartPosition = FormStartPosition.CenterScreen;
-            Font = new Font("Segoe UI", 9.5f);
-            AutoSize = true;
-            AutoSizeMode = AutoSizeMode.GrowAndShrink;
-            Padding = new Padding(12);
-            Controls.Add(table);
-
-            keyBtn = new Button { Text = pending.ToString(), AutoSize = true, MinimumSize = new Size(Dpi.Px(320), Dpi.Px(30)) };
-            keyBtn.Click += delegate { keyBtn.Text = L.T("Нажмите сочетание клавиш… (Esc — отмена)", "Press a key combination… (Esc to cancel)"); app.Capture = OnCaptured; };
-            Row(L.T("Горячая клавиша:", "Hotkey:"), keyBtn);
-
-            modeBox = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = Dpi.Px(320) };
-            modeBox.Items.AddRange(new object[] {
-                L.T("Удержание или переключение (как в Handy)", "Hold or toggle (like Handy)"),
-                L.T("Только переключение: нажал, говоришь, нажал", "Toggle only: press, speak, press"),
-                L.T("Только удержание: говоришь, пока держишь", "Hold only: speak while holding") });
-            modeBox.SelectedIndex = Math.Max(0, Array.IndexOf(modes, s.Mode));
-            Row(L.T("Режим:", "Mode:"), modeBox);
-
-            modelBox = new TextBox { Text = s.Model, Width = Dpi.Px(320) };
-            Row(L.T("Модель Gemini:", "Gemini model:"), modelBox);
-
-            keyBox = new TextBox { Text = s.ApiKey, Width = Dpi.Px(320), UseSystemPasswordChar = true };
-            Row(L.T("Ключ Gemini API:", "Gemini API key:"), keyBox);
-
-            hintBox = new TextBox { Text = s.Hint, Width = Dpi.Px(320), Height = Dpi.Px(64), Multiline = true, ScrollBars = ScrollBars.Vertical };
-            Row(L.T("Подсказка Gemini:", "Gemini hint:"), hintBox);
-
-            langBox = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = Dpi.Px(320) };
-            langBox.Items.AddRange(new object[] { "Русский", "English" });
-            langBox.SelectedIndex = s.Language == "en" ? 1 : 0;
-            Row(L.T("Язык:", "Language:"), langBox);
-
-            keepBox = new NumericUpDown { Minimum = 1, Maximum = 1000, Value = Math.Max(1, Math.Min(1000, s.KeepRecordings)), Width = Dpi.Px(90) };
-            Row(L.T("Хранить записей:", "Keep recordings:"), keepBox);
-
-            themeBox = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = Dpi.Px(320) };
-            themeBox.Items.AddRange(new object[] { L.T("Тёмная", "Dark"), L.T("Светлая", "Light") });
-            themeBox.SelectedIndex = s.Theme == "light" ? 1 : 0;
-            Row(L.T("Тема панели:", "Panel theme:"), themeBox);
-
-            accent = s.AccentColor;
-            colorBtn = new Button { AutoSize = true, MinimumSize = new Size(Dpi.Px(320), Dpi.Px(30)), TextAlign = ContentAlignment.MiddleLeft };
-            colorBtn.Paint += (o, e) =>
-            {
-                // Colour swatch on the button.
-                int sz = colorBtn.Height - Dpi.Px(14);
-                e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
-                using (var b = new SolidBrush(accent)) e.Graphics.FillEllipse(b, colorBtn.Width - sz - Dpi.Px(10), Dpi.Px(7), sz, sz);
-            };
-            colorBtn.Click += delegate
-            {
-                using (var dlg = new ColorDialog { Color = accent, FullOpen = true, CustomColors = new[] { 0xC48AFF, 0xF7A64F, 0x5BC97A, 0x6B6BFF, 0x40C8F5, 0xDDDDDD } })
-                    if (dlg.ShowDialog(this) == DialogResult.OK) { accent = dlg.Color; UpdateColorText(); }
-            };
-            UpdateColorText();
-            Row(L.T("Цвет:", "Colour:"), colorBtn);
-
-            var note = new Label { AutoSize = true, MaximumSize = new Size(Dpi.Px(470), 0), ForeColor = SystemColors.GrayText, Margin = new Padding(3, 8, 3, 8),
-                Text = L.T("Пустой ключ: берётся ключ из LearnHarness или переменной GEMINI_API_KEY. Если модель не ответит, программа попробует gemini-3.5-flash, gemini-flash-lite-latest и gemini-flash-latest. Подсказка дописывается к запросу: например, на каких языках вы говорите и какие термины встречаются. Отмена записи: Esc или крестик на панели. Записи и их текст лежат в папке recordings (меню в трее), старые удаляются сами.", "Empty key: the GEMINI_API_KEY environment variable is used (or the LearnHarness key, if installed). If the model does not answer, gemini-3.5-flash, gemini-flash-lite-latest and gemini-flash-latest are tried. The hint is added to the request: for example, which languages you speak and which terms come up. Cancel a recording with Esc or the cross on the panel. Recordings and their text are kept in the recordings folder (tray menu); old ones are deleted automatically.") };
-            table.Controls.Add(note, 0, table.RowCount);
-            table.SetColumnSpan(note, 2);
-            table.RowCount++;
-
-            var buttons = new FlowLayoutPanel { FlowDirection = FlowDirection.RightToLeft, AutoSize = true, Dock = DockStyle.Fill };
-            var save = new Button { Text = L.T("Сохранить", "Save"), AutoSize = true };
-            var cancel = new Button { Text = L.T("Отмена", "Cancel"), AutoSize = true, DialogResult = DialogResult.Cancel };
-            save.Click += delegate { Save(); };
-            cancel.Click += delegate { Close(); };
-            buttons.Controls.Add(cancel);
-            buttons.Controls.Add(save);
-            table.Controls.Add(buttons, 0, table.RowCount);
-            table.SetColumnSpan(buttons, 2);
-            AcceptButton = save;
-            CancelButton = cancel;
-        }
-
-        void Row(string label, Control c)
-        {
-            table.Controls.Add(new Label { Text = label, AutoSize = true, Anchor = AnchorStyles.Left, Margin = new Padding(3, 8, 12, 3) }, 0, table.RowCount);
-            table.Controls.Add(c, 1, table.RowCount);
-            table.RowCount++;
-        }
-
-        void UpdateColorText() { colorBtn.Text = ColorTranslator.ToHtml(accent).ToUpperInvariant(); colorBtn.Invalidate(); }
-
-        void OnCaptured(Hotkey h)
-        {
-            bool bare = !h.Ctrl && !h.Alt && !h.Shift && !h.Win;
-            if (!(h.Key == Keys.Escape && bare)) pending = h;
-            keyBtn.Text = pending.ToString();
-        }
-
-        void Save()
-        {
-            Settings s = app.Settings;
-            s.Hotkey = pending.ToString();
-            s.Mode = modes[modeBox.SelectedIndex];
-            s.Model = modelBox.Text.Trim();
-            s.ApiKey = keyBox.Text.Trim();
-            s.Theme = themeBox.SelectedIndex == 1 ? "light" : "dark";
-            s.KeepRecordings = (int)keepBox.Value;
-            s.Language = langBox.SelectedIndex == 1 ? "en" : "ru";
-            s.Hint = hintBox.Text.Trim();
-            s.Accent = string.Format("#{0:X2}{1:X2}{2:X2}", accent.R, accent.G, accent.B);
-            try { app.ApplySettings(); }
-            catch (Exception e) { MessageBox.Show(L.T("Не удалось сохранить: ", "Could not save: ") + e.Message, Text); return; }
-            Close();
-        }
-    }
-
     static class SelfTest
     {
         public static int Run()
@@ -1098,6 +978,27 @@ namespace AudioSpeech
                 using (Bitmap b = ov.Snapshot()) b.Save(Path.Combine(Settings.Dir, "look-" + l[0] + ".png"));
                 ov.Close();
             }
+            return 0;
+        }
+
+        // Renders both tabs of the main window to PNGs in the settings folder.
+        public static int Ui()
+        {
+            App.Testing = true;
+            var app = new App();
+            for (int tab = 0; tab < 2; tab++)
+            {
+                var w = new MainWindow(app, tab);
+                w.Show();
+                Application.DoEvents();
+                using (var bmp = new Bitmap(w.Width, w.Height))
+                {
+                    w.DrawToBitmap(bmp, new Rectangle(0, 0, w.Width, w.Height));
+                    bmp.Save(Path.Combine(Settings.Dir, "ui-" + tab + ".png"));
+                }
+                w.Close();
+            }
+            app.ExitThread();
             return 0;
         }
 
