@@ -84,15 +84,17 @@ namespace AudioSpeech
             get { try { return ColorTranslator.FromHtml(Accent); } catch { return Color.FromArgb(255, 138, 196); } }
         }
 
-        public static readonly string Dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "AudioSpeech");
+        // Portable mode: a settings.json next to the exe keeps settings, recordings and the log in that folder.
+        public static readonly bool Portable = File.Exists(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "settings.json"));
+        public static readonly string Dir = Portable
+            ? AppDomain.CurrentDomain.BaseDirectory.TrimEnd('\\')
+            : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "AudioSpeech");
         static string FilePath { get { return Path.Combine(Dir, "settings.json"); } }
 
         public static Settings Load()
         {
             try
             {
-                string seed = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "settings.json");
-                if (!File.Exists(FilePath) && File.Exists(seed)) { Directory.CreateDirectory(Dir); File.Copy(seed, FilePath); }
                 if (File.Exists(FilePath)) return new JavaScriptSerializer().Deserialize<Settings>(File.ReadAllText(FilePath, Encoding.UTF8)) ?? new Settings();
             }
             catch (Exception e) { Log.Write("settings: " + e.Message); }

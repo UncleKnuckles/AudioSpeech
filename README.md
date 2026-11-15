@@ -20,7 +20,7 @@ Speech-to-text, using Gemini. A small Windows tray app: press or hold a hotkey, 
 ## Getting started
 
 1. Get a Gemini API key at [Google AI Studio](https://aistudio.google.com/apikey).
-2. Download `AudioSpeech.exe` from [Releases](../../releases), or build it yourself (see below).
+2. Download from [Releases](../../releases): `AudioSpeech.exe` keeps its data in `%APPDATA%\AudioSpeech`, `AudioSpeech-portable.zip` keeps everything in its own folder. Nothing needs installing either way. You can also build it yourself (see below).
 3. Run it, click the tray icon, open **Settings** and paste the key into **Gemini API key** (settings save automatically). Instead of entering the key, you can set the `GEMINI_API_KEY` environment variable.
 4. Put the cursor in any text field, press the hotkey and speak.
 
@@ -41,7 +41,7 @@ To start AudioSpeech with Windows, turn on **Start with Windows** in Settings.
 | Start with Windows | Adds AudioSpeech to your user's startup programs. |
 | Theme, Colour | Look of the window and the floating panel. |
 
-A `settings.json` placed next to `AudioSpeech.exe` is used as the starting settings on first run.
+**Portable mode.** If a `settings.json` file sits next to `AudioSpeech.exe`, settings, recordings and the log are kept in that folder instead of `%APPDATA%`. The `AudioSpeech-portable.zip` download is set up this way: unzip it anywhere (for example, a USB stick) and run.
 
 Audio goes only to the Gemini API (`generativelanguage.googleapis.com`). There is no other network traffic and no telemetry.
 
@@ -80,7 +80,7 @@ This runs the built-in `csc.exe` and a self-test. Test flags: `--selftest`, `--r
 ### Как начать
 
 1. Получите ключ Gemini API в [Google AI Studio](https://aistudio.google.com/apikey).
-2. Скачайте `AudioSpeech.exe` из [Releases](../../releases) или соберите сами (`build.cmd`).
+2. Скачайте из [Releases](../../releases): `AudioSpeech.exe` хранит данные в `%APPDATA%\AudioSpeech`, а `AudioSpeech-portable.zip` (портативная версия) держит настройки и записи в своей папке. Устанавливать ничего не нужно. Можно и собрать самому (`build.cmd`).
 3. Запустите, щёлкните по значку в трее, откройте **Настройки** и вставьте ключ в поле **Ключ Gemini API** (настройки сохраняются сами). Вместо этого можно задать переменную окружения `GEMINI_API_KEY`.
 4. Поставьте курсор в любое поле ввода, нажмите горячую клавишу и говорите.
 

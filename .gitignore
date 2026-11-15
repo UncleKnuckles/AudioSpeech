@@ -1,3 +1,5 @@
 *.exe
 *.pdb
 settings.json
+recordings/
+audiospeech.log
